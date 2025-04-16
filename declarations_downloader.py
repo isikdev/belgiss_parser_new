@@ -368,7 +368,8 @@ def download_all_declarations(workers=3, per_page=500, use_proxy=False):
     
     return downloaded_count
 
-if __name__ == "__main__":
+def main():
+    """Точка входа в модуль"""
     # Парсинг аргументов командной строки
     parser = argparse.ArgumentParser(description='Скачивание деклараций с API в многопоточном режиме')
     parser.add_argument('--workers', type=int, default=3, help='Количество параллельных потоков (по умолчанию: 3)')
@@ -390,6 +391,10 @@ if __name__ == "__main__":
             use_proxy = True
     
     try:
-        download_all_declarations(workers=args.workers, per_page=args.per_page, use_proxy=use_proxy)
+        return download_all_declarations(workers=args.workers, per_page=args.per_page, use_proxy=use_proxy)
     except Exception as e:
-        print(f"[ОШИБКА] Ошибка при выполнении программы: {e}") 
+        print(f"[ОШИБКА] Ошибка при выполнении программы: {e}")
+        return 0
+
+if __name__ == "__main__":
+    main()

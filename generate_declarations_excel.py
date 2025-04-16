@@ -21,7 +21,6 @@ def extract_date_from_filename(filename):
     # Если не удалось найти дату в имени директории, возвращаем минимальную дату
     return datetime.min
 
-
 def extract_date_from_json(json_data):
     """Извлекает дату декларации из данных JSON"""
     # Проверяем различные поля, которые могут содержать дату
@@ -122,74 +121,26 @@ def extract_declaration_data(file_path):
             print(f"Неверный формат данных в файле {file_path}")
             return None
         
-        # Находим основные данные документа - могут быть в разных ключах
-        doc_data = data
+        # Находим основные данные документа
+        doc_data = data.get("certdecltr_ConformityDocDetails", {})
         
-        # Проверяем наличие вложенных структур (certdecltr_ConformityDocDetails)
-        if "certdecltr_ConformityDocDetails" in data and isinstance(data["certdecltr_ConformityDocDetails"], dict):
-            doc_data = data["certdecltr_ConformityDocDetails"]
+        # Регистрационный номер
+        doc_number = get_value_safely(doc_data, "DocId")
         
-        # Диагностика структуры документа (только в отладочном режиме)
-        if "DEBUG_MODE" in globals() and DEBUG_MODE:
-            print("Ключи верхнего уровня:", list(data.keys())[:10])
-            if "certdecltr_ConformityDocDetails" in data:
-                print("Ключи в certdecltr_ConformityDocDetails:", 
-                      list(data["certdecltr_ConformityDocDetails"].keys())[:10])
+        # Ссылка на документ
+        doc_id = data.get("certdecltr_id") or data.get("documents_id")
+        doc_link = f"https://tsouz.belgiss.by/doc.php?id={doc_id}" if doc_id else ""
         
-        # Извлекаем дату для сортировки
-        doc_date = get_value_safely(doc_data, "DocStartDate")
-        if not doc_date:
-            doc_date = get_value_safely(doc_data, "DocIssueDate")
-        if not doc_date:
-            doc_date = get_value_safely(doc_data, "DocValidityDate")  # Дополнительный вариант
-        if not doc_date:
-            doc_date = get_value_safely(doc_data, "IncludeDate")
-        
-        # Извлекаем регистрационный номер
-        doc_number = get_value_safely(doc_data, "DocId")  # Сначала проверяем DocId
-        if not doc_number:
-            doc_number = get_value_safely(doc_data, "DocNumber")  # Затем DocNumber
-        
-        # Статус документа
+        # Статус действия сертификата
         doc_status = ""
-        doc_start_date = ""
-        doc_end_date = ""
-        
-        if "DocStatusDetails" in doc_data and isinstance(doc_data["DocStatusDetails"], dict):
+        if "DocStatusDetails" in doc_data:
             status_code = get_value_safely(doc_data, "DocStatusDetails", "DocStatusCode")
-            status_text = ""
-            
             if status_code == "01":
-                status_text = "действует"
+                doc_status = "действует"
             elif status_code == "03":
-                status_text = "прекращен"
+                doc_status = "прекращен"
             elif status_code == "02":
-                status_text = "приостановлен"
-            else:
-                status_text = get_value_safely(doc_data, "DocStatusDetails", "DocStatusName") or "неизвестный статус"
-            
-            # Получаем даты начала и окончания действия документа
-            doc_start_date = get_value_safely(doc_data, "DocStatusDetails", "StartDate") or get_value_safely(doc_data, "DocStartDate") or ""
-            doc_end_date = get_value_safely(doc_data, "DocStatusDetails", "EndDate") or get_value_safely(doc_data, "DocValidityDate") or ""
-            
-            # Формируем полный статус с датами
-            doc_status = f"({status_code}) {status_text}"
-            if doc_start_date:
-                doc_status += f", с {doc_start_date}"
-            if doc_end_date:
-                doc_status += f" по {doc_end_date}"
-        
-        if not doc_status:
-            doc_status = get_value_safely(doc_data, "DocStatusDesc")
-        
-        # Создаем ссылку на документ в реестре
-        doc_link = ""
-        if doc_number:
-            # Очищаем номер от специальных символов для формирования ссылки
-            clean_number = doc_number
-            doc_id = get_value_safely(data, "certdecltr_id") or get_value_safely(data, "documents_id") or ""
-            if doc_id:
-                doc_link = f"https://tsouz.belgiss.by/doc.php?id={doc_id}"
+                doc_status = "приостановлен"
         
         # Вид документа об оценке соответствия
         doc_type = ""
@@ -198,490 +149,122 @@ def extract_declaration_data(file_path):
             doc_type = "Декларация о соответствии"
         elif conformity_kind_code == "1":
             doc_type = "Сертификат соответствия"
-        else:
-            doc_type = get_value_safely(doc_data, "DocType")
         
-        # Технический регламент
-        tech_reg_list = []
-        if "TechnicalRegulationId" in doc_data and isinstance(doc_data["TechnicalRegulationId"], list):
-            tech_reg_list = doc_data["TechnicalRegulationId"]
-        elif "trts" in data:
-            tech_reg_list = [get_value_safely(data, "trts")]
-        
-        tech_reg = ", ".join([str(reg) for reg in tech_reg_list if reg])
+        # Номер технического регламента
+        tech_regs = get_value_safely(doc_data, "TechnicalRegulationId", default=[])
+        tech_reg = ", ".join(tech_regs) if isinstance(tech_regs, list) else tech_regs
         
         # Полное наименование органа по сертификации
-        cert_org_name = ""
-        if "ConformityAuthorityV2Details" in doc_data and isinstance(doc_data["ConformityAuthorityV2Details"], dict):
-            cert_org_name = get_value_safely(doc_data, "ConformityAuthorityV2Details", "BusinessEntityName")
-        if not cert_org_name:
-            cert_org_name = get_value_safely(doc_data, "OrganFl", "CertificationOrgInfo", "OrganizationDesc")
-
-        # Получаем данные о заявителе
-        applicant_data = {}
+        cert_org = get_value_safely(doc_data, "ConformityAuthorityV2Details", "BusinessEntityName")
         
-        # Проверяем различные варианты структуры данных заявителя
-        if "ApplicantDetails" in doc_data and isinstance(doc_data["ApplicantDetails"], dict):
-            applicant_data = doc_data["ApplicantDetails"]
-        elif "ApplicantInfo" in doc_data and isinstance(doc_data["ApplicantInfo"], dict):
-            applicant_data = doc_data["ApplicantInfo"]
-        elif "Applicant" in doc_data and isinstance(doc_data["Applicant"], dict):
-            applicant_data = doc_data["Applicant"]
-            
-        # Извлекаем данные о заявителе из разных структур
-        applicant_name = get_value_safely(applicant_data, "BusinessEntityBriefName")
-        if not applicant_name:
-            applicant_name = get_value_safely(applicant_data, "BusinessEntityShortName")
-        if not applicant_name:
-            applicant_name = get_value_safely(applicant_data, "BusinessEntityName")
+        # Данные заявителя
+        applicant = doc_data.get("ApplicantDetails", {})
+        applicant_country = get_value_safely(applicant, "UnifiedCountryCode")
+        applicant_name = get_value_safely(applicant, "BusinessEntityName")
+        applicant_short_name = get_value_safely(applicant, "BusinessEntityBriefName")
+        applicant_id = get_value_safely(applicant, "BusinessEntityId")
         
-        applicant_country = get_value_safely(applicant_data, "UnifiedCountryCode")
-        if not applicant_country:
-            applicant_country = get_value_safely(applicant_data, "BusinessEntityCountryDeclaredInfo", "CountryDesc")
-        
-        applicant_id = get_value_safely(applicant_data, "BusinessEntityId")
-        
-        # Ищем адрес в разных местах структуры
+        # Адрес заявителя
         applicant_address = ""
-        
-        # Сначала проверяем полный адрес
-        if "SubjectAddressDetails" in applicant_data and isinstance(applicant_data["SubjectAddressDetails"], list) and len(applicant_data["SubjectAddressDetails"]) > 0:
-            address_data = applicant_data["SubjectAddressDetails"][0]
-            # Если есть полный адрес в текстовом виде
-            full_address = get_value_safely(address_data, "AddressText")
-            if full_address:
-                applicant_address = full_address
-            else:
-                # Собираем адрес из компонентов
-                address_parts = []
-                
-                country = get_value_safely(address_data, "UnifiedCountryCode")
-                if country and country != "null":
-                    address_parts.append(country)
-                
-                postcode = get_value_safely(address_data, "PostCode")
-                if postcode and postcode != "-":
-                    address_parts.append(postcode)
-                
-                region = get_value_safely(address_data, "RegionName")
-                if region and region != "-":
-                    address_parts.append(region)
-                
-                district = get_value_safely(address_data, "DistrictName")
-                if district:
-                    address_parts.append(district)
-                
-                city = get_value_safely(address_data, "CityName")
-                if city and city != "-":
-                    address_parts.append(city)
-                
-                settlement = get_value_safely(address_data, "SettlementName")
-                if settlement:
-                    address_parts.append(settlement)
-                
-                street = get_value_safely(address_data, "StreetName")
-                if street:
-                    address_parts.append(street)
-                
-                building = get_value_safely(address_data, "BuildingNumberId")
-                if building:
-                    address_parts.append(building)
-                
-                room = get_value_safely(address_data, "RoomNumberId")
-                if room:
-                    address_parts.append(room)
-                
-                if address_parts:
-                    applicant_address = ", ".join(address_parts)
-        
-        # Если адрес всё ещё не найден, ищем его в других местах
-        if not applicant_address:
-            applicant_address = get_value_safely(applicant_data, "BusinessEntityAddressDetails", "FullAddressText")
+        if "SubjectAddressDetails" in applicant and isinstance(applicant["SubjectAddressDetails"], list) and applicant["SubjectAddressDetails"]:
+            addr = applicant["SubjectAddressDetails"][0]
+            parts = [
+                get_value_safely(addr, "RegionName"),
+                get_value_safely(addr, "CityName"),
+                get_value_safely(addr, "StreetName"),
+                get_value_safely(addr, "BuildingNumberId")
+            ]
+            applicant_address = ", ".join(filter(None, parts))
         
         # Контактные данные заявителя
         applicant_contact = ""
-        applicant_phone = ""
-        applicant_email = ""
-        
-        # Проверяем наличие контактных данных в разных местах структуры
-        if "CommunicationDetails" in applicant_data and isinstance(applicant_data["CommunicationDetails"], list):
-            # Проходим по всем элементам массива коммуникационных данных
-            for comm in applicant_data["CommunicationDetails"]:
-                channel_code = get_value_safely(comm, "CommunicationChannelCode")
-                channel_ids = get_value_safely(comm, "CommunicationChannelId")
-                
-                # Преобразуем строку в список если нужно
-                if isinstance(channel_ids, str):
-                    channel_ids = [channel_ids]
-                
-                # Если у нас есть телефон (TE), сохраняем его
-                if channel_code == "TE" and channel_ids:
-                    if isinstance(channel_ids, list):
-                        phone_value = ", ".join(str(cid) for cid in channel_ids if cid)
+        if "CommunicationDetails" in applicant and isinstance(applicant["CommunicationDetails"], list):
+            contacts = []
+            for comm in applicant["CommunicationDetails"]:
+                if isinstance(comm, dict) and "CommunicationChannelId" in comm:
+                    channel_id = comm["CommunicationChannelId"]
+                    if isinstance(channel_id, list):
+                        contacts.extend(channel_id)
                     else:
-                        phone_value = str(channel_ids)
-                    
-                    if phone_value:
-                        applicant_phone = f"(TE) телефон {phone_value}"
-                
-                # Если есть email (EM), сохраняем его
-                elif channel_code == "EM" and channel_ids:
-                    if isinstance(channel_ids, list):
-                        email_value = ", ".join(str(cid) for cid in channel_ids if cid)
-                    else:
-                        email_value = str(channel_ids)
-                    
-                    if email_value:
-                        applicant_email = f"(EM) электронная почта {email_value}"
+                        contacts.append(channel_id)
+            applicant_contact = ", ".join(filter(None, contacts))
         
-        # Если не нашли в основной структуре, проверяем другие места
-        if not applicant_phone and not applicant_email:
-            # Проверяем наличие BusinessEntityContactDetails
-            if "BusinessEntityContactDetails" in applicant_data:
-                contact_details = applicant_data["BusinessEntityContactDetails"]
-                
-                # Проверяем есть ли PhoneDetails
-                if isinstance(contact_details, dict) and "PhoneDetails" in contact_details:
-                    phone = get_value_safely(contact_details, "PhoneDetails", "Phone")
-                    if phone:
-                        applicant_phone = f"(TE) телефон {phone}"
-                
-                # Также проверяем наличие EmailDetails
-                if isinstance(contact_details, dict) and "EmailDetails" in contact_details:
-                    email = get_value_safely(contact_details, "EmailDetails", "Email")
-                    if email:
-                        applicant_email = f"(EM) электронная почта {email}"
-                
-                # Если contact_details это список, перебираем его
-                if isinstance(contact_details, list):
-                    for detail in contact_details:
-                        if isinstance(detail, dict):
-                            # Ищем телефон
-                            if "PhoneDetails" in detail and not applicant_phone:
-                                phone = get_value_safely(detail, "PhoneDetails", "Phone")
-                                if phone:
-                                    applicant_phone = f"(TE) телефон {phone}"
-                            
-                            # Ищем email
-                            if "EmailDetails" in detail and not applicant_email:
-                                email = get_value_safely(detail, "EmailDetails", "Email")
-                                if email:
-                                    applicant_email = f"(EM) электронная почта {email}"
-
-        # Комбинируем телефон и email, если оба найдены
-        if applicant_phone and applicant_email:
-            applicant_contact = f"{applicant_phone}; {applicant_email}"
-        elif applicant_phone:
-            applicant_contact = applicant_phone
-        elif applicant_email:
-            applicant_contact = applicant_email
+        # Данные изготовителя
+        manufacturer = {}
+        if "ManufacturerDetails" in doc_data and isinstance(doc_data["ManufacturerDetails"], list) and doc_data["ManufacturerDetails"]:
+            manufacturer = doc_data["ManufacturerDetails"][0]
         
-        # Получаем данные об изготовителе
-        manufacturer_data = {}
-        manufacturer_info = None
-        
-        # Проверяем разные пути к данным об изготовителе
-        if "TechnicalRegulationObjectDetails" in doc_data and "ManufacturerDetails" in doc_data["TechnicalRegulationObjectDetails"]:
-            manufacturer_info = doc_data["TechnicalRegulationObjectDetails"]["ManufacturerDetails"]
-            if isinstance(manufacturer_info, list) and len(manufacturer_info) > 0:
-                manufacturer_data = manufacturer_info[0]
-        
-        if not manufacturer_data and "ManufacturerInfo" in doc_data:
-            manufacturer_data = doc_data["ManufacturerInfo"]
-        elif not manufacturer_data and "Manufacturer" in doc_data:
-            manufacturer_data = doc_data["Manufacturer"]
-        elif not manufacturer_data and "ManufacturerDetails" in doc_data:
-            manufacturer_data = doc_data["ManufacturerDetails"]
-        
-        # Название изготовителя
-        manufacturer_name = get_value_safely(manufacturer_data, "BusinessEntityBriefName")
-        if not manufacturer_name:
-            manufacturer_name = get_value_safely(manufacturer_data, "BusinessEntityShortName")
-        if not manufacturer_name:
-            manufacturer_name = get_value_safely(manufacturer_data, "BusinessEntityName")
-        
-        # Страна изготовителя
-        manufacturer_country = get_value_safely(manufacturer_data, "UnifiedCountryCode")
-        if not manufacturer_country:
-            manufacturer_country = get_value_safely(manufacturer_data, "BusinessEntityCountryDeclaredInfo", "CountryDesc")
+        manufacturer_country = get_value_safely(manufacturer, "UnifiedCountryCode")
+        manufacturer_name = get_value_safely(manufacturer, "BusinessEntityBriefName")
         
         # Адрес изготовителя
         manufacturer_address = ""
-        
-        # Проверяем есть ли прямой адрес в тексте
-        if "AddressV4Details" in manufacturer_data and isinstance(manufacturer_data["AddressV4Details"], list) and len(manufacturer_data["AddressV4Details"]) > 0:
-            address_data = manufacturer_data["AddressV4Details"][0]
-            
-            # Если есть полный адрес в текстовом виде
-            full_address = get_value_safely(address_data, "AddressText")
-            if full_address:
-                manufacturer_address = full_address
+        if "AddressV4Details" in manufacturer and isinstance(manufacturer["AddressV4Details"], list) and manufacturer["AddressV4Details"]:
+            addr = manufacturer["AddressV4Details"][0]
+            address_text = get_value_safely(addr, "AddressText")
+            if address_text:
+                manufacturer_address = address_text
             else:
-                # Собираем адрес из компонентов
-                address_parts = []
-                
-                country = get_value_safely(address_data, "UnifiedCountryCode")
-                if country and country != "null":
-                    address_parts.append(country)
-                
-                postcode = get_value_safely(address_data, "PostCode")
-                if postcode:
-                    address_parts.append(postcode)
-                
-                region = get_value_safely(address_data, "RegionName")
-                if region and region != "-":
-                    address_parts.append(region)
-                
-                district = get_value_safely(address_data, "DistrictName")
-                if district:
-                    address_parts.append(district)
-                
-                city = get_value_safely(address_data, "CityName")
-                if city and city != "-":
-                    address_parts.append(city)
-                
-                street = get_value_safely(address_data, "StreetName")
-                if street:
-                    address_parts.append(street)
-                
-                building = get_value_safely(address_data, "BuildingNumberId")
-                if building:
-                    address_parts.append(building)
-                
-                room = get_value_safely(address_data, "RoomNumberId")
-                if room:
-                    address_parts.append(room)
-                
-                if address_parts:
-                    manufacturer_address = ", ".join(address_parts)
-        
-        # Если адрес всё ещё не найден, ищем его в других местах
-        if not manufacturer_address:
-            manufacturer_address = get_value_safely(manufacturer_data, "BusinessEntityAddressDetails", "FullAddressText")
+                parts = [
+                    get_value_safely(addr, "RegionName"),
+                    get_value_safely(addr, "CityName"),
+                    get_value_safely(addr, "StreetName"),
+                    get_value_safely(addr, "BuildingNumberId")
+                ]
+                manufacturer_address = ", ".join(filter(None, parts))
         
         # Контактные данные изготовителя
         manufacturer_contact = ""
-        manufacturer_phone = ""
-        manufacturer_email = ""
-        
-        # Проверяем наличие контактных данных в разных местах структуры
-        if "CommunicationDetails" in manufacturer_data and isinstance(manufacturer_data["CommunicationDetails"], list):
-            # Проходим по всем элементам массива коммуникационных данных
-            for comm in manufacturer_data["CommunicationDetails"]:
-                channel_code = get_value_safely(comm, "CommunicationChannelCode")
-                channel_ids = get_value_safely(comm, "CommunicationChannelId")
-                
-                # Преобразуем строку в список если нужно
-                if isinstance(channel_ids, str):
-                    channel_ids = [channel_ids]
-                
-                # Если у нас есть телефон (TE), сохраняем его
-                if channel_code == "TE" and channel_ids:
-                    if isinstance(channel_ids, list):
-                        phone_value = ", ".join(str(cid) for cid in channel_ids if cid)
+        if "CommunicationDetails" in manufacturer and isinstance(manufacturer["CommunicationDetails"], list):
+            contacts = []
+            for comm in manufacturer["CommunicationDetails"]:
+                if isinstance(comm, dict) and "CommunicationChannelId" in comm:
+                    channel_id = comm["CommunicationChannelId"]
+                    if isinstance(channel_id, list):
+                        contacts.extend(channel_id)
                     else:
-                        phone_value = str(channel_ids)
-                    
-                    if phone_value:
-                        manufacturer_phone = f"(TE) телефон {phone_value}"
-                
-                # Если есть email (EM), сохраняем его
-                elif channel_code == "EM" and channel_ids:
-                    if isinstance(channel_ids, list):
-                        email_value = ", ".join(str(cid) for cid in channel_ids if cid)
-                    else:
-                        email_value = str(channel_ids)
-                    
-                    if email_value:
-                        manufacturer_email = f"(EM) электронная почта {email_value}"
+                        contacts.append(channel_id)
+            manufacturer_contact = ", ".join(filter(None, contacts))
         
-        # Если не нашли в основной структуре, проверяем другие места
-        if not manufacturer_phone and not manufacturer_email:
-            # Проверяем наличие BusinessEntityContactDetails
-            if "BusinessEntityContactDetails" in manufacturer_data:
-                contact_details = manufacturer_data["BusinessEntityContactDetails"]
-                
-                # Проверяем есть ли PhoneDetails
-                if isinstance(contact_details, dict) and "PhoneDetails" in contact_details:
-                    phone = get_value_safely(contact_details, "PhoneDetails", "Phone")
-                    if phone:
-                        manufacturer_phone = f"(TE) телефон {phone}"
-                
-                # Также проверяем наличие EmailDetails
-                if isinstance(contact_details, dict) and "EmailDetails" in contact_details:
-                    email = get_value_safely(contact_details, "EmailDetails", "Email")
-                    if email:
-                        manufacturer_email = f"(EM) электронная почта {email}"
-                
-                # Если contact_details это список, перебираем его
-                if isinstance(contact_details, list):
-                    for detail in contact_details:
-                        if isinstance(detail, dict):
-                            # Ищем телефон
-                            if "PhoneDetails" in detail and not manufacturer_phone:
-                                phone = get_value_safely(detail, "PhoneDetails", "Phone")
-                                if phone:
-                                    manufacturer_phone = f"(TE) телефон {phone}"
-                            
-                            # Ищем email
-                            if "EmailDetails" in detail and not manufacturer_email:
-                                email = get_value_safely(detail, "EmailDetails", "Email")
-                                if email:
-                                    manufacturer_email = f"(EM) электронная почта {email}"
+        # Наименование объекта оценки соответствия
+        product_name = get_value_safely(doc_data, "TechnicalRegulationObjectDetails", "ProductDetails", 0, "ProductName")
         
-        # Комбинируем телефон и email, если оба найдены
-        if manufacturer_phone and manufacturer_email:
-            manufacturer_contact = f"{manufacturer_phone}; {manufacturer_email}"
-        elif manufacturer_phone:
-            manufacturer_contact = manufacturer_phone
-        elif manufacturer_email:
-            manufacturer_contact = manufacturer_email
+        # Код товара по ТН ВЭД ЕАЭС
+        commodity_codes = get_value_safely(doc_data, "TechnicalRegulationObjectDetails", "ProductDetails", 0, "CommodityCode", default=[])
+        commodity_code = ", ".join(commodity_codes) if isinstance(commodity_codes, list) else commodity_codes
         
-        # Получаем данные о продукте
-        product_data = {}
-        product_info = None
+        # Дополнительное наименование объекта
+        product_text = get_value_safely(doc_data, "TechnicalRegulationObjectDetails", "ProductDetails", 0, "ProductText")
         
-        if "TechnicalRegulationObjectDetails" in doc_data and "ProductDetails" in doc_data["TechnicalRegulationObjectDetails"]:
-            product_info = doc_data["TechnicalRegulationObjectDetails"]["ProductDetails"]
-            if isinstance(product_info, list) and len(product_info) > 0:
-                product_data = product_info[0]
+        # Даты документа
+        doc_date = get_value_safely(doc_data, "DocStartDate")
+        start_date = get_value_safely(doc_data, "DocStatusDetails", "StartDate") or doc_date
+        end_date = get_value_safely(doc_data, "DocStatusDetails", "EndDate") or get_value_safely(doc_data, "DocValidityDate")
         
-        if not product_data and "ProductInfo" in doc_data:
-            product_data = doc_data["ProductInfo"]
-        elif not product_data and "Product" in doc_data:
-            product_data = doc_data["Product"]
-        
-        # Название продукта
-        product_name = get_value_safely(product_data, "ProductName")
-        if not product_name:
-            product_name = get_value_safely(doc_data, "CertificationObjectName")
-        
-        # Дополнительная информация о продукте
-        product_text = get_value_safely(product_data, "ProductText")
-        
-        # ТН ВЭД код
-        hs_code = ""
-        
-        # Проверяем наличие кодов в разных структурах данных
-        # 1. Сначала проверяем CommodityCode в данных о продукте
-        commodity_codes = get_value_safely(product_data, "CommodityCode")
-        if isinstance(commodity_codes, list) and commodity_codes:
-            hs_code = ", ".join(str(code) for code in commodity_codes if code)
-        elif isinstance(commodity_codes, str) and commodity_codes:
-            hs_code = commodity_codes
-        
-        # 2. Если не нашли, ищем в ProductDetails.HsCodeText
-        if not hs_code:
-            hs_code_text = get_value_safely(product_data, "ProductDetails", "HsCodeText")
-            if hs_code_text:
-                hs_code = hs_code_text
-        
-        # 3. Ищем в TechnicalRegulationObjectDetails.ProductGroupDetails
-        if not hs_code and "TechnicalRegulationObjectDetails" in doc_data:
-            # Различные пути к данным о группах продуктов
-            product_group_paths = [
-                # Путь 1: Непосредственно в TechnicalRegulationObjectDetails
-                ["TechnicalRegulationObjectDetails", "ProductGroupDetails"],
-                # Путь 2: В ProductDetails внутри TechnicalRegulationObjectDetails
-                ["TechnicalRegulationObjectDetails", "ProductDetails", "ProductGroupDetails"]
-            ]
-            
-            for path in product_group_paths:
-                # Получаем данные по текущему пути
-                current_data = doc_data
-                valid_path = True
-                
-                for key in path:
-                    if isinstance(current_data, dict) and key in current_data:
-                        current_data = current_data[key]
-                    else:
-                        valid_path = False
-                        break
-                
-                if valid_path and isinstance(current_data, list):
-                    for group in current_data:
-                        # Ищем код в разных возможных полях
-                        for code_field in ["ProductGroupCode", "Code", "Id"]:
-                            group_code = get_value_safely(group, code_field)
-                            if group_code:
-                                hs_code = group_code
-                                break
-                        
-                        if hs_code:
-                            break
-                
-                if hs_code:
-                    break
-        
-        # 4. Ищем непосредственно в ProductInstanceDetails
-        if not hs_code and "ProductInstanceDetails" in product_data and isinstance(product_data["ProductInstanceDetails"], list):
-            for instance in product_data["ProductInstanceDetails"]:
-                instance_codes = get_value_safely(instance, "CommodityCode")
-                if isinstance(instance_codes, list) and instance_codes:
-                    hs_code = ", ".join(str(code) for code in instance_codes if code)
-                    break
-                elif isinstance(instance_codes, str) and instance_codes:
-                    hs_code = instance_codes
-                    break
-        
-        # 5. Поиск в других местах структуры данных
-        if not hs_code:
-            # Ищем прямую ссылку на HsCode в объекте TechnicalRegulationObjectDetails
-            if "TechnicalRegulationObjectDetails" in doc_data:
-                tro_details = doc_data["TechnicalRegulationObjectDetails"]
-                hs_code = get_value_safely(tro_details, "HsCode")
-            
-            # Проверяем наличие HsCodeList на верхнем уровне
-            if not hs_code and "HsCodeList" in doc_data:
-                hs_code_list = doc_data["HsCodeList"]
-                if isinstance(hs_code_list, list) and hs_code_list:
-                    hs_code = ", ".join(str(code) for code in hs_code_list if code)
-        
-        # Попытка дополнительного поиска в структуре данных о продукте
-        if not hs_code and isinstance(product_data, dict):
-            # Перебираем все ключи в product_data, ищем похожие на HsCode
-            for key in product_data:
-                if "code" in key.lower() or "hs" in key.lower() or "tn" in key.lower():
-                    potential_code = get_value_safely(product_data, key)
-                    if potential_code:
-                        hs_code = potential_code
-                        break
-        
-        # Формируем словарь с нужными полями
-        declaration_data = {
-            # Сведения о документе
+        return {
             "Регистрационный номер": doc_number,
             "Ссылка на документ": doc_link,
             "Статус действия сертификата (декларации)": doc_status,
             "Вид документа об оценке соответствия": doc_type,
             "Номер технического регламента": tech_reg,
-            "Полное наименование органа по сертификации": cert_org_name,
-            
-            # Заявитель
+            "Полное наименование органа по сертификации": cert_org,
             "Заявитель Страна": applicant_country,
-            "Заявитель Краткое наименование": applicant_name,
+            "Заявитель Краткое наименование": applicant_short_name,
             "Заявитель Идентификатор хозяйствующего субъекта": applicant_id,
             "Заявитель Адрес": applicant_address,
             "Заявитель Контактный реквизит": applicant_contact,
-            
-            # Изготовитель
             "Изготовитель Страна": manufacturer_country,
             "Изготовитель Краткое наименование": manufacturer_name,
             "Изготовитель Адрес": manufacturer_address,
             "Изготовитель Контактный реквизит": manufacturer_contact,
-            
-            # Объект технического регулирования
             "Наименование объекта оценки соответствия": product_name,
-            "Код товара по ТН ВЭД ЕАЭС": hs_code,
+            "Код товара по ТН ВЭД ЕАЭС": commodity_code,
             "Наименование объекта оценки соответствия (дополнительно)": product_text,
-            
-            # Служебные поля для сортировки
             "Дата документа": doc_date,
-            "Дата начала действия": doc_start_date,
-            "Дата окончания действия": doc_end_date,
+            "Дата начала действия": start_date,
+            "Дата окончания действия": end_date
         }
         
-        return declaration_data
     except Exception as e:
         print(f"Ошибка при обработке файла {file_path}: {str(e)}")
         return None
